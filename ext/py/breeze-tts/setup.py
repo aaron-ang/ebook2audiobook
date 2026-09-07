@@ -12,7 +12,13 @@
 # Upstream ships no setup.py/pyproject.toml; this file is local. The only edit to
 # upstream source is renaming its `models` module, which collides on install, to
 # `breeze_models`.
+from pathlib import Path
+
 from setuptools import find_packages, setup
+
+# DeviceInstaller reads version.txt to decide whether the installed copy is
+# current; with no version it reinstalls this package on every launch.
+VERSION = (Path(__file__).parent / "version.txt").read_text(encoding="utf-8").strip()
 
 # torch, torchaudio and transformers are omitted: DeviceInstaller resolves those
 # per device, and pinning them here would fight that resolution.
@@ -24,7 +30,7 @@ REQUIRED = [
 
 setup(
     name="breeze-tts",
-    version="0.0.0",
+    version=VERSION,
     url="https://github.com/breezeblue-ai/breeze-tts",
     license="Apache-2.0",
     packages=find_packages(exclude=["tests", "tests.*"]),
