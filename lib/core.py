@@ -2831,6 +2831,78 @@ def convert_chapters2audio(session_id:str)->bool:
     def _count_sentences(sentences:list)->int:
         return sum(1 for s in sentences if any(c.isalnum() for c in s.strip()))
 
+    def _write_watermark()->None:
+        mark = batcher.watermark()
+        if mark is not None:
+            blocks_current['block_resume'], blocks_current['sentence_resume'] = mark
+
+    def _run_pack(pack:list)->bool:
+        nonlocal global_sent, last_save_time, baseline_initialized
+        if session['cancellation_requested']:
+            return False
+        texts = [item.text for item in pack]
+        # the engine plans over the whole pack, so it sorts and splits a population
+        # several batches wide instead of one chapter's leftovers
+        for group in tts_manager.plan_chunks(list(range(len(pack))), texts):
+            if session['cancellation_requested']:
+                return False
+            chunk = [pack[k] for k in group]
+            items = [(item.path, item.text) for item in chunk]
+            run, error = tts_manager.convert_sentences2audio(items, block_voice=chunk[0].job.voice)
+            if not run:
+                show_alert(session_id, {'type': 'warning', 'msg': error})
+                return False
+            for item in chunk:
+                item.job.converted = True
+            batcher.mark_done(chunk)
+            _write_watermark()
+            now = time.monotonic()
+            if not baseline_initialized:
+                # first successful conversion of the run establishes the baseline
+                session['blocks_current'] = blocks_current
+                session['blocks_saved'] = copy.deepcopy(blocks_current)
+                save_json_blocks(session_id, 'blocks_saved')
+                baseline_initialized = True
+            elif now - last_save_time >= 5:
+                session['blocks_current'] = blocks_current
+                save_db_stamp(session_id)
+                last_save_time = now
+            global_sent += len(chunk)
+            t.update(len(chunk))
+            total_progress = t.n / total_sentences
+            if session['is_gui_process']:
+                desc = items[0][1] if len(items) == 1 else f'batch of {len(items)}'
+                progress_bar(progress=total_progress, desc=f'{ebook_name} - {desc}')
+            t.set_description(f'{total_progress * 100:.2f}%')
+            for _, sentence_text in items:
+                print(f' : {sentence_text}')
+            if not _drain_completed():
+                return False
+        return True
+
+    def _drain_completed()->bool:
+        for job in batcher.take_completed():
+            if not _finish_block(job):
+                return False
+        return True
+
+    def _finish_block(job:BlockJob)->bool:
+        nonlocal last_save_time
+        show_alert(session_id, {'type': 'info', 'msg': f'End of Chapter {job.ch_num} (block {job.block_index})'})
+        if job.converted or job.needs_combine:
+            show_alert(session_id, {'type': 'info', 'msg': f'Combining chapter {job.ch_num} (block {job.block_index}) to audio, sentence {job.sent_start} to {job.sent_end}'})
+            chapter_audio_file = os.path.join(session['chapters_dir'], f'{job.block_id}.{default_audio_proc_format}')
+            if not combine_audio_sentences(session_id, chapter_audio_file, job.block_id, job.block_len):
+                show_alert(session_id, {'type': 'warning', 'msg': 'combine_audio_sentences() failed!'})
+                return False
+        # combine first, then advance: a block is durable only once it has audio
+        batcher.confirm_combined(job)
+        _write_watermark()
+        session['blocks_current'] = blocks_current
+        save_db_stamp(session_id)
+        last_save_time = time.monotonic()
+        return True
+
     session = context.get_session(session_id)
     if not (session and session.get('id', False)):
         return False
@@ -2841,6 +2913,9 @@ def convert_chapters2audio(session_id:str)->bool:
             return False
         print(f'*********** Session: {session_id} **************\n{session_info}')
         tts_manager = TTSManager(session)
+        # batches are filled across block boundaries: a batch runs until its longest
+        # sequence finishes, so per-block dispatch pays a partial tail batch per chapter.
+        batcher = SentenceBatcher(tts_manager.batch_size, resolve_window_multiplier())
         blocks_current = session['blocks_current']
         blocks = blocks_current['blocks']
         block_resume = blocks_current['block_resume']
@@ -2890,6 +2965,9 @@ def convert_chapters2audio(session_id:str)->bool:
         sentences_dir = session['sentences_dir']
         global_sent = 0
         ch_num = 0
+        # sentence labels are positional and must not depend on completion order
+        label_cursor = 0
+        anchor_pinned = False
         last_save_time = time.monotonic()
         baseline_initialized = False
         msg = (f'---------<br/>'
@@ -2910,7 +2988,9 @@ def convert_chapters2audio(session_id:str)->bool:
                 block_len = len(sentences)
                 valid_idx = {i for i,s in enumerate(sentences) if any(c.isalnum() for c in s.strip())}
                 last_idx = block_len - 1
-                sent_start = global_sent
+                sent_start = label_cursor
+                sent_end = label_cursor + len(valid_idx) - 1
+                label_cursor += len(valid_idx)
                 current_hash = block_hash(block)
                 block_ref = prev_blocks.get(block_id)
                 hash_ref = block_hash(block_ref) if block_ref else None
@@ -2942,11 +3022,6 @@ def convert_chapters2audio(session_id:str)->bool:
                     start_sentence = sentence_resume
                 show_alert(session_id, {'type': 'info', 'msg': f'Chapter {ch_num} (block {x}) containing {block_len} sentences…'})
                 os.makedirs(block_dir, exist_ok=True)
-                blocks_current['block_resume'] = x
-                blocks_current['sentence_resume'] = start_sentence
-                session['blocks_current'] = blocks_current
-                save_db_stamp(session_id)
-                converted = False
                 block_voice = block.get('voice') or session.get('voice')
                 pending = [j for j in sorted(valid_idx) if j >= start_sentence or j in missing_sentences]
                 skipped = len(valid_idx) - len(pending)
@@ -2955,56 +3030,28 @@ def convert_chapters2audio(session_id:str)->bool:
                     t.update(skipped)
                 if pending and start_sentence > 0:
                     show_alert(session_id, {'type': 'info', 'msg': f'*** Resuming from sentence {global_sent} ***'})
-                done = set()
-                frontier = 0
-                for group in tts_manager.plan_chunks(pending, sentences):
-                    if session['cancellation_requested']:
+                job = BlockJob(
+                    x, block_id, block_dir, ch_num, block_voice, pending, sentences,
+                    block_len, default_audio_proc_format, sent_start, sent_end,
+                    start_sentence, bool(block_changed or missing_sentences)
+                )
+                for pack in batcher.admit(job):
+                    if not _run_pack(pack):
                         return False
-                    items = [
-                        (os.path.join(block_dir, f'{j}.{default_audio_proc_format}'), sentences[j].strip())
-                        for j in group
-                    ]
-                    run, error = tts_manager.convert_sentences2audio(items, block_voice=block_voice)
-                    if not run:
-                        show_alert(session_id, {'type': 'warning', 'msg': error})
-                        return False
-                    converted = True
-                    # chunks can finish out of order, and one index cannot describe
-                    # progress with a hole in it, so stop at the first unfinished.
-                    done.update(group)
-                    while frontier < len(pending) and pending[frontier] in done:
-                        blocks_current['sentence_resume'] = pending[frontier]
-                        frontier += 1
-                    now = time.monotonic()
-                    if not baseline_initialized:
-                        # first successful conversion of the run establishes the baseline
-                        session['blocks_current'] = blocks_current
-                        session['blocks_saved'] = copy.deepcopy(blocks_current)
-                        save_json_blocks(session_id, 'blocks_saved')
-                        baseline_initialized = True
-                    elif now - last_save_time >= 5:
-                        session['blocks_current'] = blocks_current
-                        save_db_stamp(session_id)
-                        last_save_time = now
-                    global_sent += len(group)
-                    t.update(len(group))
-                    total_progress = t.n / total_sentences
-                    if session['is_gui_process']:
-                        desc = items[0][1] if len(items) == 1 else f'batch of {len(items)}'
-                        progress_bar(progress=total_progress, desc=f'{ebook_name} - {desc}')
-                    t.set_description(f'{total_progress * 100:.2f}%')
-                    for _, sentence_text in items:
-                        print(f' : {sentence_text}')
-                sent_end = global_sent - 1
-                show_alert(session_id, {'type': 'info', 'msg': f'End of Chapter {ch_num} (block {x})'})
-                if converted or block_changed or missing_sentences:
-                    show_alert(session_id, {'type': 'info', 'msg': f'Combining chapter {ch_num} (block {x}) to audio, sentence {sent_start} to {sent_end}'})
+                if not anchor_pinned:
+                    # pin the anchor once so an early crash cannot leave the previous
+                    # run's stamp pointing past work this run has not redone yet
+                    _write_watermark()
                     session['blocks_current'] = blocks_current
                     save_db_stamp(session_id)
-                    last_save_time = time.monotonic()
-                    if not combine_audio_sentences(session_id, chapter_audio_file, block_id, block_len):
-                        show_alert(session_id, {'type': 'warning', 'msg': 'combine_audio_sentences() failed!'})
-                        return False
+                    anchor_pinned = True
+                if not _drain_completed():
+                    return False
+            for pack in batcher.flush():
+                if not _run_pack(pack):
+                    return False
+            if not _drain_completed():
+                return False
             #blocks_current['block_resume'] = 0
             #blocks_current['sentence_resume'] = 0
             session['blocks_current'] = blocks_current
