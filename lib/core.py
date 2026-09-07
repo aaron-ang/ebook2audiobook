@@ -1547,7 +1547,10 @@ def filter_blocks(session_id:str, idx:int, doc:EpubHtml, stanza_nlp:Pipeline, is
             doc_body = doc.get_body_content()
             raw_html = doc_body.decode('utf-8') if isinstance(doc_body, bytes) else doc_body
             soup = BeautifulSoup(raw_html, 'html.parser')
-            body = soup.body
+            # ebooklib returns only the body's inner markup when the source <body>
+            # tag carries no attributes, and html.parser never invents a wrapper,
+            # so in that case the parsed fragment is itself the body.
+            body = soup.body or soup
             if not body:
                 msg = 'No body found. Skip to next doc…'
                 print(msg)
