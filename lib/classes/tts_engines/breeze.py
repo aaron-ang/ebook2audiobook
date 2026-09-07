@@ -158,7 +158,22 @@ class Breeze(TTSUtils, TTSRegistry, name="breeze"):
                 # batch endpoint cannot use it and the warmup would be wasted.
                 if self.batch_size == 1:
                     command.append("--fast-all")
-                proc = subprocess.Popen(command, env=env)
+                # the server outlives this process and gets reused by later runs,
+                # so its output goes to its own file rather than whichever
+                # conversion log happened to spawn it.
+                log_path = os.path.join(
+                    self.cache_dir, f"breeze-tts-server-{BREEZE_API_PORT}.log"
+                )
+                print(f"Breeze API server log: {log_path}")
+                # the child gets its own dup of the fd at exec, so it keeps
+                # writing after this handle closes.
+                with open(log_path, "a", encoding="utf-8") as server_log:
+                    proc = subprocess.Popen(
+                        command,
+                        env=env,
+                        stdout=server_log,
+                        stderr=subprocess.STDOUT,
+                    )
                 for _ in range(90):
                     if self._server_is_up():
                         break
