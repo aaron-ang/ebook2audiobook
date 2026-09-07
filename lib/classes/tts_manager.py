@@ -1,9 +1,10 @@
 from typing import Any
+
 from lib.classes.tts_registry import TTSRegistry
 
-class TTSManager:
 
-    def __init__(self, session:Any)->None:
+class TTSManager:
+    def __init__(self, session: Any) -> None:
         self.session = session
         engine_name = session.get("tts_engine")
         if engine_name is None:
@@ -16,21 +17,23 @@ class TTSManager:
                 f"Expected one of: {', '.join(TTSRegistry.ENGINES)}"
             )
         self.engine = engine_cls(session)
-    
-    def set_voice(self, block_voice:str|None)->tuple:
+
+    def set_voice(self, block_voice: str | None) -> tuple:
         return self.engine._set_voice(block_voice)
 
-    def convert_sentence2audio(self, sentence_file:str, sentence:str, **kwargs)->tuple:
+    def convert_sentence2audio(
+        self, sentence_file: str, sentence: str, **kwargs
+    ) -> tuple:
         return self.engine.convert(sentence_file, sentence, **kwargs)
 
-    def plan_chunks(self, pending:list, sentences:list)->list:
+    def plan_chunks(self, pending: list, sentences: list) -> list:
         # one sentence per call unless the engine groups them itself
         planner = getattr(self.engine, "plan_chunks", None)
         if planner is None:
             return [[i] for i in pending]
         return planner(pending, sentences)
 
-    def convert_sentences2audio(self, items:list, **kwargs)->tuple:
+    def convert_sentences2audio(self, items: list, **kwargs) -> tuple:
         # items is [(sentence_file, sentence), ...]
         converter = getattr(self.engine, "convert_batch", None)
         if converter is not None:
@@ -40,3 +43,8 @@ class TTSManager:
             if not run:
                 return False, error
         return True, None
+
+    @property
+    def batch_size(self) -> int:
+        # engines that synthesize one sentence per call report no batch size
+        return int(getattr(self.engine, "batch_size", 1) or 1)

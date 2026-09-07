@@ -5,52 +5,79 @@
 # IS USED TO PRINT IT OUT TO THE TERMINAL, AND "CHAPTER" TO THE CODE
 # WHICH IS LESS GENERIC FOR THE DEVELOPERS
 
-import argparse, asyncio, csv, difflib, fnmatch, sqlite3, hashlib, io, json, math, os, pytesseract, gc
-import random, shutil, subprocess, sys, tempfile, threading, time, uvicorn, copy, base64
-import traceback, socket, unicodedata, urllib.request, uuid, zipfile, pymupdf, multiprocessing
-import ebooklib, psutil, requests, stanza, importlib, queue, pykakasi
-import regex as re, gradio as gr
-
-from typing import Any, Generator, Dict
-from PIL import Image, ImageSequence
-from tqdm import tqdm
-from bs4 import BeautifulSoup, NavigableString, Tag
-from collections import Counter
-from collections.abc import Mapping, MutableMapping
+import asyncio
+import base64
+import copy
+import difflib
+import gc
+import hashlib
+import io
+import json
+import math
+import os
+import shutil
+import socket
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import traceback
+import unicodedata
+import uuid
+import zipfile
+from collections.abc import Generator, Mapping
 from datetime import datetime
-from ebooklib import epub
-from ebooklib.epub import EpubBook
-from ebooklib.epub import EpubHtml
 from glob import glob
-from iso639 import Lang
-from markdown import markdown
-from multiprocessing import Pool, cpu_count
-from multiprocessing import Manager, Event
+from multiprocessing import Manager
 from multiprocessing.managers import DictProxy, ListProxy, SyncManager
-from stanza.pipeline.core import Pipeline, DownloadMethod
-from num2words2 import num2words
 from pathlib import Path
-from PIL import Image
+from typing import Any
+
+import ebooklib
+import gradio as gr
+import psutil
+import pykakasi
+import pymupdf
+import pytesseract
+import regex as re
+import requests
+import stanza
+import uvicorn
+from bs4 import BeautifulSoup, NavigableString, Tag
+from ebooklib import epub
+from ebooklib.epub import EpubBook, EpubHtml
+from iso639 import Lang
+from num2words2 import num2words
+from phonemizer import phonemize
+from PIL import Image, ImageSequence
 from pydub import AudioSegment
 from pydub.utils import mediainfo
-from queue import Queue, Empty
-from types import MappingProxyType
-from langdetect import detect
+from pypinyin import Style, pinyin
+from stanza.pipeline.core import DownloadMethod, Pipeline
+from tqdm import tqdm
 from unidecode import unidecode
-from phonemizer import phonemize
-from pypinyin import pinyin, Style
-
-from lib.classes.subprocess_pipe import SubprocessPipe
-from lib.classes.vram_detector import VRAMDetector
-from lib.classes.voice_extractor import VoiceExtractor
-from lib.classes.non_text_filter import NonTextFilter
-#from lib.classes.redirect_console import RedirectConsole
-from lib.classes.argos_translator import ArgosTranslator
-from lib.classes.tts_manager import TTSManager
-from lib.classes.tts_engines.common.audio import get_audiolist_duration, get_audio_duration
-from lib.classes.tts_engines.common.utils import build_vtt_file
 
 from lib import *
+
+#from lib.classes.redirect_console import RedirectConsole
+from lib.classes.argos_translator import ArgosTranslator
+from lib.classes.non_text_filter import NonTextFilter
+from lib.classes.sentence_batcher import (
+    BlockJob,
+    SentenceBatcher,
+    resolve_window_multiplier,
+)
+from lib.classes.subprocess_pipe import SubprocessPipe
+from lib.classes.tts_engines.common.audio import (
+    get_audio_duration,
+    get_audiolist_duration,
+)
+from lib.classes.tts_engines.common.utils import build_vtt_file
+from lib.classes.tts_manager import TTSManager
+from lib.classes.voice_extractor import VoiceExtractor
+from lib.classes.vram_detector import VRAMDetector
 
 #import logging
 #logging.basicConfig(
